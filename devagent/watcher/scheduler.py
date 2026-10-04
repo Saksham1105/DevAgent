@@ -37,6 +37,8 @@ class WatcherScheduler:
         self.interval_minutes = interval_minutes
         self.checker = WatcherChecker(config, project_root)
         self.conflict_detector = CrossIssueConflictDetector()
+        self._progress: Progress | None = None
+        self._progress_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """
@@ -88,28 +90,47 @@ class WatcherScheduler:
         for watched_repo in watched_repos:
             await self._run_for_repo(watched_repo)
 
-    async def _run_for_repo(self, watched_repo: WatchedRepo) -> None:
+    async def _run_for_repo(
+        self,
+        watched_repo: WatchedRepo,
+        progress: Progress | None = None,
+    ) -> None:
         """Runs the full check cycle for one repo."""
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True,
-        ) as progress:
-            task = progress.add_task(
+        active_progress = progress or self._progress
+        own_progress = False
+
+        if active_progress is None:
+            active_progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+                console=console,
+            )
+            active_progress.start()
+            own_progress = True
+
+        async with self._progress_lock:
+            task = active_progress.add_task(
                 f"Checking {watched_repo.owner}/{watched_repo.repo}...",
                 total=None,
             )
 
-            def update_progress(issue_number: int, issue_title: str, status: str) -> None:
-                progress.update(
-                    task,
-                    description=f"Analysing #{issue_number}: {issue_title[:40]}...",
-                )
+        def update_progress(issue_number: int, issue_title: str, status: str) -> None:
+            active_progress.update(
+                task,
+                description=f"Analysing #{issue_number}: {issue_title[:40]}...",
+            )
 
+        try:
             new_analyses = await self.checker.run_check(
                 watched_repo,
                 progress_callback=update_progress,
             )
+        finally:
+            async with self._progress_lock:
+                active_progress.remove_task(task)
+            if own_progress:
+                active_progress.stop()
 
         if not new_analyses:
             console.print(
