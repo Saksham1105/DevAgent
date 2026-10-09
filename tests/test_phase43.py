@@ -48,12 +48,36 @@ class TestBuildHtml:
         html = build_html("127.0.0.1", 7331)
         assert "/api/docs" in html
 
+    def test_contains_connection_error_handling(self) -> None:
+        html = build_html()
+        # Verifies HTTP error checking and error propagation
+        assert "if (!r.ok)" in html
+        assert "Metrics request failed" in html
+        assert "Sessions request failed" in html
+        assert "setEndpointStatus" in html
+        assert "connState" in html
+
+    def test_contains_disconnected_ui_elements_and_styles(self) -> None:
+        html = build_html()
+        # Verifies disconnected state styling and UI indicators
+        assert ".live-chip.disconnected" in html
+        assert 'id="conn-banner"' in html
+        assert 'id="conn-retry-btn"' in html
+        assert "Disconnected" in html
+
+    def test_contains_retry_and_refresh_wiring(self) -> None:
+        html = build_html()
+        # Verifies retry button click and auto-refresh wire to refreshAll
+        assert "retryBtn.addEventListener('click'" in html
+        assert "refreshAll()" in html
+
 
 class TestFastapiGraphEndpoint:
     def test_get_root_returns_html(self) -> None:
         from fastapi.testclient import TestClient
 
         from devagent.server.fastapi_app import app
+
         client = TestClient(app, raise_server_exceptions=False)
         r = client.get("/")
         assert r.status_code == 200
@@ -64,6 +88,7 @@ class TestFastapiGraphEndpoint:
         from fastapi.testclient import TestClient
 
         from devagent.server.fastapi_app import app
+
         client = TestClient(app, raise_server_exceptions=False)
         r = client.get("/")
         assert "d3" in r.text
@@ -72,6 +97,7 @@ class TestFastapiGraphEndpoint:
         from fastapi.testclient import TestClient
 
         from devagent.server.fastapi_app import app
+
         client = TestClient(app)
         schema = client.get("/openapi.json").json()
         assert "/" not in schema.get("paths", {})

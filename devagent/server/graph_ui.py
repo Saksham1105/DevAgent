@@ -94,13 +94,51 @@ _TEMPLATE = """\
       background: var(--running-dim);
       color: var(--running);
       border: 1px solid rgba(16,185,129,.25);
+      cursor: default;
+      transition: background .2s, color .2s, border-color .2s;
+    }
+    .live-chip.disconnected {
+      background: var(--failed-dim);
+      color: var(--failed);
+      border-color: rgba(244,63,94,.35);
     }
     .pulse-dot {
       width: 6px; height: 6px; border-radius: 50%;
       background: var(--running);
       animation: pulse 2s ease-in-out infinite;
     }
+    .live-chip.disconnected .pulse-dot {
+      background: var(--failed);
+      animation: none;
+    }
     @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.75)} }
+    #conn-banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      background: var(--failed-dim);
+      border: 1px solid rgba(244,63,94,.35);
+      color: var(--failed);
+    }
+    #conn-banner .retry-btn {
+      background: transparent;
+      border: 1px solid rgba(244,63,94,.5);
+      color: var(--failed);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+    #conn-banner .retry-btn:hover {
+      background: rgba(244,63,94,.15);
+    }
     .hdr-countdown { font-size: 11px; color: var(--muted); min-width: 52px; text-align: right; }
     .hdr-link {
       font-size: 11px; color: var(--text2);
@@ -245,7 +283,7 @@ _TEMPLATE = """\
     DevAgent
   </div>
   <div class="hdr-sep"></div>
-  <div class="live-chip">
+  <div class="live-chip" id="live-chip">
     <span class="pulse-dot"></span>
     <span id="live-label">Live</span>
   </div>
@@ -286,6 +324,10 @@ _TEMPLATE = """\
   <aside>
     <div class="s-section">
       <div class="s-title">Overview</div>
+      <div id="conn-banner">
+        <span id="conn-banner-msg">Cannot reach server</span>
+        <button class="retry-btn" id="conn-retry-btn" type="button">Retry</button>
+      </div>
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-lbl">Active</div><div class="stat-val running" id="m-active">&#8212;</div></div>
         <div class="stat-card"><div class="stat-lbl">Total</div><div class="stat-val" id="m-total">&#8212;</div></div>
@@ -404,9 +446,11 @@ function render() {
   document.getElementById('empty').style.display = sess.length ? 'none' : 'block';
 
   // update live chip
-  const nRun = allSessions.filter(s => s.status === 'running').length;
-  document.getElementById('live-label').textContent =
-    nRun ? `${nRun} running` : 'Live';
+  if (!connState.hasError) {
+    const nRun = allSessions.filter(s => s.status === 'running').length;
+    document.getElementById('live-label').textContent =
+      nRun ? `${nRun} running` : 'Live';
+  }
 
   const nodes = sess.map(s => ({
     id:      s.id,
@@ -577,10 +621,59 @@ function renderSparkline(hourly) {
     .attr('fill', 'none').attr('stroke', '#6366f1').attr('stroke-width', 1.5);
 }
 
+// ── connection state ──────────────────────────────────────────────────
+const connState = {
+  metricsError: null,
+  sessionsError: null,
+  get hasError() { return Boolean(this.metricsError || this.sessionsError); },
+  get errorMessage() { return this.metricsError || this.sessionsError || ''; }
+};
+
+function updateConnUI() {
+  const chip = document.getElementById('live-chip');
+  const label = document.getElementById('live-label');
+  const banner = document.getElementById('conn-banner');
+  const bannerMsg = document.getElementById('conn-banner-msg');
+
+  if (connState.hasError) {
+    if (chip) {
+      chip.classList.add('disconnected');
+      chip.title = connState.errorMessage;
+    }
+    if (label) label.textContent = 'Disconnected';
+    if (banner) banner.style.display = 'flex';
+    if (bannerMsg) bannerMsg.textContent = connState.errorMessage;
+  } else {
+    if (chip) {
+      chip.classList.remove('disconnected');
+      chip.title = '';
+    }
+    if (banner) banner.style.display = 'none';
+    const nRun = allSessions.filter(s => s.status === 'running').length;
+    if (label) label.textContent = nRun ? `${nRun} running` : 'Live';
+  }
+}
+
+function setEndpointStatus(endpoint, err) {
+  if (endpoint === 'metrics') {
+    connState.metricsError = err;
+  } else if (endpoint === 'sessions') {
+    connState.sessionsError = err;
+  }
+  updateConnUI();
+}
+
+async function refreshAll() {
+  await Promise.all([loadSessions(), loadMetrics()]);
+}
+
 // ── sidebar metrics ───────────────────────────────────────────────────
 async function loadMetrics() {
   try {
     const r = await fetch(BASE + '/api/v1/metrics?period=24h');
+    if (!r.ok) {
+      throw new Error(`Metrics request failed (HTTP ${r.status})`);
+    }
     const d = await r.json();
     document.getElementById('m-active').textContent = d.active_sessions ?? '—';
     document.getElementById('m-total').textContent  = d.sessions_count  ?? '—';
@@ -602,17 +695,39 @@ async function loadMetrics() {
             <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
           </div>`;
       }).join('') || '<div style="color:var(--muted);font-size:11px">No model data yet</div>';
-  } catch (_) {}
+
+    setEndpointStatus('metrics', null);
+  } catch (err) {
+    const msg = err && err.message ? err.message : 'Cannot reach server';
+    console.error('loadMetrics error:', err);
+    setEndpointStatus('metrics', msg);
+  }
 }
 
 // ── sessions ──────────────────────────────────────────────────────────
 async function loadSessions() {
   try {
     const r = await fetch(BASE + '/api/v1/sessions?limit=80');
+    if (!r.ok) {
+      throw new Error(`Sessions request failed (HTTP ${r.status})`);
+    }
     const d = await r.json();
     allSessions = d.sessions || [];
+    setEndpointStatus('sessions', null);
     render();
-  } catch (_) {}
+  } catch (err) {
+    const msg = err && err.message ? err.message : 'Cannot reach server';
+    console.error('loadSessions error:', err);
+    setEndpointStatus('sessions', msg);
+  }
+}
+
+// ── retry button ──────────────────────────────────────────────────────
+const retryBtn = document.getElementById('conn-retry-btn');
+if (retryBtn) {
+  retryBtn.addEventListener('click', () => {
+    refreshAll();
+  });
 }
 
 // ── filter chips ──────────────────────────────────────────────────────
@@ -629,14 +744,14 @@ document.querySelectorAll('.chip').forEach(c => {
 const cdEl = document.getElementById('hdr-cd');
 setInterval(() => {
   countdown--;
-  if (countdown <= 0) { countdown = 30; loadSessions(); loadMetrics(); }
+  if (countdown <= 0) { countdown = 30; refreshAll(); }
   cdEl.textContent = '↻ ' + countdown + 's';
 }, 1000);
 
 // ── keyboard ──────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
-  if (e.key === 'r' || e.key === 'R') { countdown = 1; }
+  if (e.key === 'r' || e.key === 'R') { countdown = 1; refreshAll(); }
   if (e.key === 'Escape') { window.__unpinTip(); }
   if (e.key === 'f' || e.key === 'F') {
     svg.transition().duration(420).call(
@@ -646,8 +761,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ── boot ──────────────────────────────────────────────────────────────
-loadSessions();
-loadMetrics();
+refreshAll();
 }());
 </script>
 </body>
