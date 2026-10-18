@@ -10,12 +10,15 @@ Improvements over the original:
 
 from __future__ import annotations
 
+import atexit
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
 from pathlib import Path
+from typing import Self
 
 from devagent.tools.registry import ToolRegistry
 
@@ -86,6 +89,27 @@ class ShellSession:
             val = m.group(2).strip('"').strip("'")
             self.env[key] = val
 
+    @property
+    def tmp_dir(self) -> Path:
+        """Return the path to this session's temporary directory."""
+        return self._tmp_dir
+
+    def cleanup(self) -> None:
+        """Safely remove this session's temporary directory if it exists."""
+        if self._tmp_dir.exists():
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        self.cleanup()
+
 
 # ---------------------------------------------------------------------------
 # Background process registry (module-level, keyed by string PID)
@@ -112,6 +136,7 @@ def register_shell_tool(
     timeout_sec: int = 300,
 ) -> None:
     session = ShellSession(project_root)
+    atexit.register(session.cleanup)
 
     # ------------------------------------------------------------------
     # run_shell

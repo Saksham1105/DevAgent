@@ -6,19 +6,26 @@ multi-line command must update the session cwd, exactly like one after `;`.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from devagent.tools.shell_tool import ShellSession
+from devagent.tools.registry import ToolRegistry
+from devagent.tools.shell_tool import ShellSession, register_shell_tool
 
 
 @pytest.fixture()
-def session(tmp_path: Path) -> ShellSession:
+def session(tmp_path: Path) -> Generator[ShellSession, None, None]:
     """A session rooted in a temp dir that contains a `sub` subdirectory."""
     (tmp_path / "sub").mkdir()
     (tmp_path / "other").mkdir()
-    return ShellSession(str(tmp_path))
+    sess = ShellSession(str(tmp_path))
+    try:
+        yield sess
+    finally:
+        sess.cleanup()
 
 
 def test_starts_in_project_root(session: ShellSession, tmp_path: Path) -> None:
@@ -95,3 +102,91 @@ def test_export_after_newline_is_tracked(session: ShellSession) -> None:
     """The export parser is separator-agnostic; a multi-line command still works."""
     session.apply_side_effects("echo hi\nexport FOO=bar")
     assert session.env["FOO"] == "bar"
+
+
+def test_cleanup_removes_temp_dir(tmp_path: Path) -> None:
+    """Cleanup removes the session's temporary directory from disk."""
+    sess = ShellSession(str(tmp_path))
+    temp_dir = sess.tmp_dir
+    assert temp_dir.exists()
+    assert temp_dir.is_dir()
+
+    sess.cleanup()
+    assert not temp_dir.exists()
+
+
+def test_cleanup_is_idempotent(tmp_path: Path) -> None:
+    """Calling cleanup() multiple times does not raise any exception."""
+    sess = ShellSession(str(tmp_path))
+    temp_dir = sess.tmp_dir
+    assert temp_dir.exists()
+
+    sess.cleanup()
+    assert not temp_dir.exists()
+
+    # Second call when directory is already gone
+    sess.cleanup()
+    assert not temp_dir.exists()
+
+
+def test_context_manager_cleans_up_on_exit(tmp_path: Path) -> None:
+    """Using ShellSession as a context manager ensures cleanup on exit."""
+    with ShellSession(str(tmp_path)) as sess:
+        temp_dir = sess.tmp_dir
+        assert temp_dir.exists()
+
+    assert not temp_dir.exists()
+
+
+def test_context_manager_cleans_up_on_exception(tmp_path: Path) -> None:
+    """Using ShellSession as a context manager ensures cleanup even if an exception occurs."""
+    temp_dir: Path | None = None
+    with pytest.raises(RuntimeError, match="boom"), ShellSession(str(tmp_path)) as sess:
+        temp_dir = sess.tmp_dir
+        assert temp_dir.exists()
+        raise RuntimeError("boom")
+
+    assert temp_dir is not None
+    assert not temp_dir.exists()
+
+
+def test_large_output_cleaned_up_with_session(tmp_path: Path) -> None:
+    """Large command output stored in temporary directory is removed upon session cleanup."""
+    sess = ShellSession(str(tmp_path))
+
+    # Create dummy output files in the session tmp_dir
+    out_file1 = sess.next_output_path()
+    out_file1.write_text("line\n" * 100, encoding="utf-8")
+    out_file2 = sess.next_output_path()
+    out_file2.write_text("another\n" * 60, encoding="utf-8")
+
+    assert out_file1.exists()
+    assert out_file2.exists()
+    temp_dir = sess.tmp_dir
+    assert temp_dir.exists()
+
+    sess.cleanup()
+    assert not out_file1.exists()
+    assert not out_file2.exists()
+    assert not temp_dir.exists()
+
+
+def test_register_shell_tool_registers_atexit_cleanup(tmp_path: Path) -> None:
+    """register_shell_tool registers an atexit handler for the session's cleanup."""
+    registry = ToolRegistry()
+    registered_handlers: list[tuple] = []
+
+    def fake_register(func, *args, **kwargs):
+        registered_handlers.append((func, args, kwargs))
+
+    with patch("atexit.register", side_effect=fake_register):
+        register_shell_tool(registry, project_root=str(tmp_path))
+
+    # Assert that a cleanup function was registered
+    assert len(registered_handlers) == 1
+    func, _, _ = registered_handlers[0]
+    assert callable(func)
+    assert func.__name__ == "cleanup"
+    # Execute the registered cleanup to ensure it works and doesn't leak the test dir
+    func()
+
