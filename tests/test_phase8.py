@@ -232,6 +232,28 @@ def test_compress_session_summarises_old_events(tmp_path):
     llm.complete_with_tools.assert_called_once()
 
 
+
+def test_compress_session_falls_back_when_response_content_is_none(tmp_path):
+    """A provider returning no text should use the raw-event fallback."""
+    db = tmp_path / "test.db"
+    from devagent.session import store
+    from devagent.session.compressor import compress_session
+
+    store.init_schema(db_path=db)
+    sid = "sess-none-content"
+    store.create_session(sid, db_path=db)
+    _seed_events(sid, 8, db)
+
+    llm = _make_mock_llm()
+    llm.complete_with_tools.return_value.content = None
+
+    result = compress_session(sid, llm, keep_last_n=3, db_path=db)
+
+    assert result is not None
+    assert "[Compression failed" not in result.summary
+    assert "[USER] Event 0:" in result.summary
+    assert store.get_compressed_summary(sid, db_path=db) == result.summary
+
 def test_compress_session_marks_events_in_db(tmp_path):
     db = tmp_path / "test.db"
     from devagent.session import store
