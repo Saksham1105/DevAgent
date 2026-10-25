@@ -199,7 +199,7 @@ def compress_session(
 
     try:
         response = llm.complete_with_tools(messages, tools=[])
-        summary = response.content.strip()
+        summary = (response.content or "").strip()
     except Exception as exc:
         summary = f"[Compression failed: {exc}]\n\n" + old_text[:2000]
 
