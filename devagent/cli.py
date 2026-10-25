@@ -677,9 +677,7 @@ def index(
     from devagent.core.storage import (
         clear_project_index,
         ensure_dirs,
-        get_changed_files_count,
         get_chroma_dir,
-        get_index_status,
         get_sqlite_path,
     )
 
@@ -698,9 +696,10 @@ def index(
 
     # --- --status flag ---
     if status:
-        idx_status = asyncio.run(get_index_status(sqlite_path))
+        from devagent.codeprism.client import CodePrismClient
 
-        if not idx_status["exists"]:
+        codeprism = CodePrismClient(str(project_root))
+        if not codeprism.is_indexed:
             console.print(
                 Panel(
                     "This project has not been indexed yet.\n"
@@ -710,31 +709,14 @@ def index(
                 )
             )
             return
-
-        # Check for changes
-        changes = asyncio.run(get_changed_files_count(project_root, sqlite_path))
-
-        table = Table(title="Index Status", border_style="cyan")
-        table.add_column("Metric", style="bold")
-        table.add_column("Value", justify="right")
-
-        table.add_row("Indexed files", str(idx_status["total_files"]))
-        table.add_row("Total chunks", str(idx_status["total_chunks"]))
-        table.add_row("Last indexed", idx_status["last_indexed"] or "never")
-        table.add_row("Changed files", str(changes["changed"]))
-        table.add_row("New files", str(changes["new"]))
-        table.add_row("Deleted files", str(changes["deleted"]))
-
-        console.print(table)
-
-        total_changes = changes["changed"] + changes["new"] + changes["deleted"]
-        if total_changes > 0:
-            console.print(
-                f"\n[yellow]WARN {total_changes} file(s) changed since last index. "
-                "Run [bold]devagent index[/bold] to update.[/yellow]"
+        console.print(
+            Panel(
+                "CodePrism index is available for this project.\n"
+                "Graph-powered tools will be enabled in new sessions.",
+                title="Index Status",
+                border_style="green",
             )
-        else:
-            console.print("\n[green]Index is up to date.[/green]")
+        )
         return
 
     # --- --clear flag ---
@@ -1632,12 +1614,30 @@ def run(
         cfg.llm.model = model
     tools_list = [t.strip() for t in allow_tools.split(",")] if allow_tools else None
 
+    selected_resume = resume
+    if selected_resume is None and sys.stdin.isatty() and sys.stdout.isatty():
+        from devagent.session.manager import SessionManager
+
+        sessions = SessionManager().list_by_project(str(project_root), limit=10)
+        if sessions:
+            console.print("[bold]Recent sessions[/bold]")
+            for index, item in enumerate(sessions, 1):
+                title = item.get("title") or "Untitled session"
+                console.print(f"  [cyan]{index}[/cyan]. {title} ({item['id'][:8]})")
+            new_index = len(sessions) + 1
+            console.print(f"  [cyan]{new_index}[/cyan]. Start new session")
+            choice = console.input("Select a session [default: new]: ").strip()
+            if choice and choice.isdigit():
+                selected = int(choice)
+                if 1 <= selected <= len(sessions):
+                    selected_resume = sessions[selected - 1]["id"]
+
     try:
         session = DevAgentSession(
             cfg,
             project_root,
             max_tokens=max_tokens,
-            resume_id=resume,
+            resume_id=selected_resume,
             no_limit=no_limit,
             plan_mode=plan,
             allow=list(allow),
@@ -1658,8 +1658,9 @@ def run(
         _handle_error(exc)
         return
 
-    if resume:
+    if selected_resume:
         console.print(f"[dim]Resuming session: {session.session_id[:8]}[/dim]")
+        session.show_history()
     else:
         _name_suffix = f"  ({name})" if name else ""
         console.print(f"[dim]New session: {session.session_id[:8]}{_name_suffix}[/dim]")

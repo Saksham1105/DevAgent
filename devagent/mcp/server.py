@@ -85,7 +85,7 @@ def serve_mcp(
     github_token: str | None = None
 
     try:
-        from codeprism import CodePrismClient  # type: ignore[import]
+        from devagent.codeprism.client import CodePrismClient
         codeprism_client = CodePrismClient(project_root)
     except Exception:
         pass

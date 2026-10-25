@@ -10,6 +10,8 @@ token cost of the original event log.
 
 from __future__ import annotations
 
+import json
+
 from devagent.core.llm import AgentMessage, ToolCallRequest
 from devagent.session import store
 
@@ -76,6 +78,53 @@ def build_messages(
 
 
 def estimate_tokens(messages: list[AgentMessage]) -> int:
-    """Very rough token estimate: 1 token ~= 4 characters of text."""
-    total = sum(len(m.content) for m in messages)
-    return total // 4
+    """Estimate message tokens, including tool-call arguments."""
+    total = 0
+    for message in messages:
+        total += len(message.content or "")
+        total += sum(len(json.dumps(call.args, ensure_ascii=False)) for call in message.tool_calls)
+        total += len(message.tool_call_id or "") + len(message.tool_name or "")
+    return (total + 3) // 4
+
+
+def estimate_request_tokens(messages: list[AgentMessage], tools: list | None = None) -> int:
+    """Estimate the prompt payload, including serialized tool definitions."""
+    total = estimate_tokens(messages) * 4
+    for tool in tools or []:
+        total += len(tool.name) + len(tool.description)
+        total += len(json.dumps(tool.parameters or {}, ensure_ascii=False))
+    return (total + 3) // 4
+
+
+def fit_request_context(
+    messages: list[AgentMessage],
+    tools: list,
+    max_tokens: int,
+) -> tuple[list[AgentMessage], list]:
+    """Keep the system prompt and newest messages within a request budget.
+
+    Tool definitions are retained because removing them can make tool calls
+    invalid. Older conversation messages are dropped first; durable history
+    remains in SQLite and can be compressed for later turns.
+    """
+    if estimate_request_tokens(messages, tools) <= max_tokens:
+        return messages, tools
+
+    system = messages[:1]
+    retained: list[AgentMessage] = []
+    for message in reversed(messages[1:]):
+        candidate = system + [message] + list(reversed(retained))
+        if estimate_request_tokens(candidate, tools) > max_tokens:
+            break
+        retained.append(message)
+
+    retained.reverse()
+    result = system + retained
+    if len(result) == 1 and result[0].content:
+        tool_tokens = estimate_request_tokens([], tools)
+        allowed_chars = max(0, (max_tokens - tool_tokens) * 4)
+        result[0] = AgentMessage(
+            role="system",
+            content=result[0].content[:allowed_chars],
+        )
+    return result, tools

@@ -108,7 +108,7 @@ class SessionConfig(BaseModel):
     max_sessions: int = 20
     # Phase 8 — context auto-compression
     auto_compress: bool = True
-    compression_threshold: float = 0.6    # compress when history exceeds this fraction of context window
+    compression_threshold: float = 0.45   # compress before history dominates the request
     compression_window_size: int = 20     # keep this many most-recent events verbatim
     compression_model: str = "cheap"      # router tier used for summarisation LLM calls
 

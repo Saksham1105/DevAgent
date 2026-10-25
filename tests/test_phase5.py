@@ -43,6 +43,28 @@ def test_router_different_tasks_different_clients():
     assert cheap_client.cfg.model == "qwen2.5-coder:3b"
 
 
+def test_router_runtime_override_replaces_cached_task_clients():
+    from devagent.core.config import LLMConfig
+    from devagent.core.router import MultiModelRouter
+
+    router = MultiModelRouter(_make_config())
+    router.get_llm("planning")
+    router.set_override(LLMConfig(
+        provider="openai",
+        model="gpt-test",
+        api_key="new-key",
+        base_url="https://example.test/v1",
+    ))
+
+    planning, _ = router.get_llm_for_iteration([], 1)
+    coding, _ = router.get_llm_for_iteration(["write_file"], 2)
+    assert planning is coding
+    assert planning.cfg.provider == "openai"
+    assert planning.cfg.model == "gpt-test"
+    assert planning.cfg.api_key == "new-key"
+    assert planning.cfg.base_url == "https://example.test/v1"
+
+
 def test_router_detect_task_iteration_1():
     from devagent.core.router import MultiModelRouter
     cfg = _make_config()

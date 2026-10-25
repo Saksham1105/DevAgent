@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from devagent.agent.permissions import PermissionManager
 from devagent.core.llm import LLMClient
 from devagent.session.budget import BudgetExceeded, TokenBudget
-from devagent.session.history import build_messages
+from devagent.session.history import build_messages, fit_request_context
 from devagent.session.manager import SessionManager
 from devagent.session.memory import MemoryBlock
 from devagent.tools.registry import ToolRegistry
@@ -196,8 +197,30 @@ class AgentLoop:
                 if overlay:
                     current_system = full_system + overlay
 
-            # Build message history from DB
-            messages = build_messages(self.session_id, current_system)
+            # Select LLM for this iteration (router or default)
+            task = "fallback"
+            if _HAS_ROUTER and self._router is not None:
+                current_llm, task = self._router.get_llm_for_iteration(last_tool_names, iteration)
+            else:
+                current_llm = self.llm
+
+            db_path = getattr(self.session_mgr, "db_path", None)
+            if not isinstance(db_path, (str, Path)):
+                db_path = None
+            messages = build_messages(
+                self.session_id,
+                current_system,
+                db_path=db_path,
+            )
+            from devagent.session.compressor import _context_window_for
+            provider = getattr(getattr(current_llm, "cfg", None), "provider", None) or "anthropic"
+            model = getattr(getattr(current_llm, "cfg", None), "model", None) or "claude-sonnet-4-6"
+            if not isinstance(provider, str):
+                provider = "anthropic"
+            if not isinstance(model, str):
+                model = "claude-sonnet-4-6"
+            context_limit = int(_context_window_for(provider, model) * 0.55)
+            messages, tools = fit_request_context(messages, tools, context_limit)
 
             # Budget check
             try:
@@ -205,13 +228,6 @@ class AgentLoop:
             except BudgetExceeded as exc:
                 yield ErrorEvent(str(exc))
                 return
-
-            # Select LLM for this iteration (router or default)
-            task = "fallback"
-            if _HAS_ROUTER and self._router is not None:
-                current_llm, task = self._router.get_llm_for_iteration(last_tool_names, iteration)
-            else:
-                current_llm = self.llm
 
             # LLM call
             try:

@@ -10,7 +10,7 @@ Router logic (matches roadmap Phase 5 spec, wired in Phase 1 fix):
 
 from __future__ import annotations
 
-from devagent.core.config import DevAgentConfig
+from devagent.core.config import DevAgentConfig, LLMConfig
 from devagent.core.llm import LLMClient
 
 # Tool name sets for task detection
@@ -29,6 +29,21 @@ class MultiModelRouter:
     def __init__(self, config: DevAgentConfig) -> None:
         self._config = config
         self._cache: dict[str, LLMClient] = {}
+        self._override: LLMConfig | None = None
+
+    def set_override(self, llm_config: LLMConfig) -> None:
+        """Use one live model for every routed iteration.
+
+        Interactive model changes must take precedence over static router tiers.
+        Copy the config so later mutations cannot leave a cached client stale.
+        """
+        self._override = llm_config.model_copy(deep=True)
+        self._cache.clear()
+
+    def clear_override(self) -> None:
+        """Return to the configured per-task router tiers."""
+        self._override = None
+        self._cache.clear()
 
     def detect_task(self, last_tool_names: list[str], iteration: int) -> str:
         """Return a task key: planning | coding | reviewing | cheap | fallback."""
@@ -44,6 +59,10 @@ class MultiModelRouter:
         return "fallback"
 
     def get_llm(self, task: str = "fallback") -> LLMClient:
+        if self._override is not None:
+            if "__override__" not in self._cache:
+                self._cache["__override__"] = LLMClient(self._override)
+            return self._cache["__override__"]
         if task not in self._cache:
             from devagent.core.llm import get_llm_for_task
             self._cache[task] = get_llm_for_task(self._config, task)

@@ -68,7 +68,19 @@ class CompressionResult:
 
 
 def _estimate_tokens(text: str) -> int:
-    return len(text) // 4
+    return (len(text) + 3) // 4
+
+
+def _estimate_event_tokens(events: list[dict[str, Any]]) -> int:
+    """Estimate the full serialized event payload sent back to the model."""
+    total = 0
+    for event in events:
+        total += len(event.get("role", ""))
+        total += len(event.get("content") or "")
+        total += len(str(event.get("tool_calls") or []))
+        total += len(event.get("tool_name") or "")
+        total += len(event.get("tool_call_id") or "")
+    return _estimate_tokens("x" * total)
 
 
 def _context_window_for(provider: str, model: str) -> int:
@@ -124,8 +136,7 @@ def maybe_compress(
         return None
 
     # Estimate total history tokens
-    history_text = _format_events_for_summary(all_events)
-    history_tokens = _estimate_tokens(history_text)
+    history_tokens = _estimate_event_tokens(all_events)
 
     context_window = _context_window_for(llm.cfg.provider, llm.cfg.model)
     threshold_tokens = int(context_window * session_cfg.compression_threshold)

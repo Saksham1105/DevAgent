@@ -119,6 +119,11 @@ class TokenBudget:
         return self.input_tokens + self.output_tokens
 
     @property
+    def total_tokens(self) -> int:
+        """Backward-compatible alias for the aggregate token count."""
+        return self.total_used
+
+    @property
     def call_count(self) -> int:
         return self._call_count
 

@@ -21,15 +21,33 @@ from typing import Any
 # Background event loop (started once per process)
 # ---------------------------------------------------------------------------
 
-_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-_thread = threading.Thread(target=_loop.run_forever, daemon=True, name="codeprism-loop")
-_thread.start()
+_loop: asyncio.AbstractEventLoop | None = None
+_thread: threading.Thread | None = None
+_loop_lock = threading.Lock()
+
+
+def _get_loop() -> asyncio.AbstractEventLoop:
+    global _loop, _thread
+    with _loop_lock:
+        if _loop is None:
+            _loop = asyncio.new_event_loop()
+            _thread = threading.Thread(
+                target=_loop.run_forever,
+                daemon=True,
+                name="codeprism-loop",
+            )
+            _thread.start()
+        return _loop
 
 
 def _run(coro, timeout: float = 30.0) -> Any:
     """Submit coroutine to the background loop and block until done."""
-    future = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return future.result(timeout=timeout)
+    future = asyncio.run_coroutine_threadsafe(coro, _get_loop())
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        future.cancel()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +133,7 @@ class CodePrismClient:
         self._session_obj = None
         self._session_id: str | None = None
         self._ready = False   # True after first _ensure_ready()
-        self._indexed = False  # True if .codeprism/codeprism.db exists
+        self._indexed = False  # True if CodePrism's project database exists
 
     # ------------------------------------------------------------------
     # Lazy init
@@ -125,7 +143,7 @@ class CodePrismClient:
         if self._ready:
             return self._indexed
 
-        db_path = self.project_root / ".codeprism" / "codeprism.db"
+        db_path = self._db_path()
         if not db_path.exists():
             self._ready = True
             self._indexed = False
@@ -134,7 +152,7 @@ class CodePrismClient:
         try:
             from codeprism import CodePrism
             prism = CodePrism(str(self.project_root))
-            _run(prism.initialize(), timeout=60)
+            _run(prism.initialize(), timeout=10)
             self._prism = prism
             self._ready = True
             self._indexed = True
@@ -149,7 +167,16 @@ class CodePrismClient:
 
     @property
     def is_indexed(self) -> bool:
-        return self._ensure_ready()
+        if self._ready:
+            return self._indexed
+        return self._db_path().exists()
+
+    def _db_path(self) -> Path:
+        try:
+            from codeprism.core.paths import get_db_path
+            return get_db_path(self.project_root)
+        except Exception:
+            return self.project_root / ".codeprism" / "codeprism.db"
 
     def _not_indexed(self) -> dict:
         return {

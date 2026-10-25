@@ -30,7 +30,7 @@ from rich.prompt import Confirm
 
 _REPL_COMMANDS = [
     "/explain", "/test", "/review", "/commit", "/summarize", "/deep-research", "/help",
-    "/status", "/context", "/clear", "/rewind", "/permissions", "/goal", "/btw", "/autocompact",
+    "/status", "/history", "/context", "/clear", "/rewind", "/permissions", "/goal", "/btw", "/autocompact",
     "/model", "/effort", "/think", "/memory", "/tokens", "/security", "/undo", "/diff", "/exit",
     "/fork", "/tasks", "/loop", "/rename", "/sessions",
     "/fast", "/compact", "/recap", "/branch", "/theme", "/batch", "/background",
@@ -383,6 +383,7 @@ class DevAgentSession:
             permission_mgr=self._permission_mgr,
             bare=bare,
         )
+        self._router = router
 
         # Phase 15 — expose effort and bare for REPL commands
         self._bare = bare
@@ -449,6 +450,7 @@ class DevAgentSession:
                 session_id=self.session_id,
                 llm=self._llm,
                 session_cfg=self._cfg.session,
+                db_path=self._mgr.db_path,
             )
             if result:
                 self._console.print(
@@ -457,6 +459,27 @@ class DevAgentSession:
                 )
         except Exception:
             pass  # compression is best-effort; never block a turn
+
+    def show_history(self, limit: int = 8) -> None:
+        """Display a bounded resume/history view without changing LLM context."""
+        from devagent.session import store
+
+        summary = store.get_compressed_summary(self.session_id, db_path=self._mgr.db_path)
+        events = self._mgr.get_events(self.session_id)
+        if summary:
+            self._console.print("[bold]Earlier session summary[/bold]")
+            self._console.print(summary)
+        recent = events[-limit:]
+        if recent:
+            self._console.print(f"[bold]Recent messages (last {len(recent)})[/bold]")
+            for event in recent:
+                role = event["role"].replace("tool_result", "tool")
+                content = (event.get("content") or "").strip().replace("\n", " ")
+                if len(content) > 240:
+                    content = content[:237] + "..."
+                self._console.print(f"[dim]{role}:[/dim] {content}")
+        elif not summary:
+            self._console.print("[dim]No previous messages in this session.[/dim]")
 
     def run_message(self, message: str, quiet: bool = False) -> str:
         """Drive one user turn; render events. Returns the final LLM text.
@@ -666,6 +689,15 @@ class DevAgentSession:
                     render_diff(self._last_diff)
                 continue
 
+            if cmd.startswith("/history"):
+                parts = raw.split(None, 1)
+                try:
+                    limit = max(1, min(int(parts[1]), 50)) if len(parts) > 1 else 8
+                except ValueError:
+                    limit = 8
+                self.show_history(limit)
+                continue
+
             # Phase 23 / Phase 28 — /model: hot-swap provider/model; /model alone shows picker
             if cmd.startswith("/model"):
                 parts = raw.split(None, 1)
@@ -745,6 +777,8 @@ class DevAgentSession:
                         self._console.print(
                             f"[dim]Model switched to [bold]{self._cfg.llm.provider}/{spec}[/bold][/dim]"
                         )
+                if self._router is not None and len(parts) >= 2:
+                    self._router.set_override(self._cfg.llm)
                 continue
 
             # Phase 15 — /effort: change effort level for the rest of the session
@@ -908,6 +942,8 @@ class DevAgentSession:
                         f"[bold]{self._cfg.llm.provider}/{self._cfg.llm.model}[/bold]  "
                         f"(type [bold]/fast off[/bold] to restore)[/dim]"
                     )
+                if self._router is not None:
+                    self._router.set_override(self._cfg.llm)
                 continue
 
             # Phase 32 — /compact [focus on X]: force-compress session history now
@@ -1057,12 +1093,13 @@ class DevAgentSession:
             # Phase 13 — /context: token usage breakdown
             if cmd == "/context":
                 budget = self._budget
+                total_tokens = budget.total_used
                 lines = [
-                    f"Total tokens used this session:  {budget.total_tokens():,}",
+                    f"Total tokens used this session:  {total_tokens:,}",
                 ]
-                cap = getattr(budget, "_max_tokens", None)
+                cap = budget.max_tokens
                 if cap:
-                    pct = int(100 * budget.total_tokens() / cap)
+                    pct = int(100 * total_tokens / cap)
                     lines.append(f"Budget cap:  {cap:,} ({pct}% used)")
                 else:
                     lines.append("Budget cap:  unlimited")

@@ -50,7 +50,7 @@ def test_session_config_compression_defaults():
     from devagent.core.config import SessionConfig
     cfg = SessionConfig()
     assert cfg.auto_compress is True
-    assert cfg.compression_threshold == 0.6
+    assert cfg.compression_threshold == 0.45
     assert cfg.compression_window_size == 20
     assert cfg.compression_model == "cheap"
 
@@ -350,6 +350,12 @@ def test_context_window_lookup_ollama_fallback():
     assert result > 0
 
 
+def test_default_compression_threshold_limits_history_growth():
+    from devagent.core.config import SessionConfig
+
+    assert SessionConfig().compression_threshold == 0.45
+
+
 def test_context_window_lookup_default():
     from devagent.session.compressor import _context_window_for
     result = _context_window_for("unknown-provider", "unknown-model")
@@ -367,3 +373,22 @@ def test_session_compress_command_exists():
     sig = inspect.signature(session_compress)
     assert "session_id" in sig.parameters
     assert "keep" in sig.parameters
+
+
+def test_fit_request_context_counts_tools_and_keeps_newest_messages():
+    from devagent.core.llm import AgentMessage, ToolDef
+    from devagent.session.history import fit_request_context
+
+    messages = [
+        AgentMessage(role="system", content="system prompt"),
+        AgentMessage(role="user", content="old " * 500),
+        AgentMessage(role="assistant", content="middle " * 500),
+        AgentMessage(role="user", content="latest request"),
+    ]
+    tools = [ToolDef(name="read_file", description="x" * 100, parameters={"type": "object"})]
+    fitted, fitted_tools = fit_request_context(messages, tools, max_tokens=100)
+
+    assert fitted_tools == tools
+    assert fitted[0].role == "system"
+    assert "latest request" in fitted[-1].content
+    assert len(fitted) < len(messages)

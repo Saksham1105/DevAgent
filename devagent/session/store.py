@@ -18,6 +18,8 @@ from devagent.core.storage import get_sessions_db_path
 
 
 def _conn(db_path: Path | None = None) -> sqlite3.Connection:
+    if not isinstance(db_path, (str, Path)):
+        db_path = None
     path = db_path or get_sessions_db_path()
     conn = sqlite3.connect(str(path), timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -246,6 +248,7 @@ def append_event(
                 tokens_in, tokens_out, now,
             ),
         )
+        conn.commit()
         return seq
 
 
@@ -383,11 +386,14 @@ def delete_memory_key(
 
 def get_compressed_summary(session_id: str, db_path: Path | None = None) -> str:
     """Return the stored compressed summary for this session, or '' if none."""
-    with _conn(db_path) as conn:
-        row = conn.execute(
-            "SELECT compressed_summary FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-    return (row["compressed_summary"] or "") if row else ""
+    try:
+        with _conn(db_path) as conn:
+            row = conn.execute(
+                "SELECT compressed_summary FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return (row["compressed_summary"] or "") if row else ""
+    except Exception:
+        return ""
 
 
 def save_compressed_summary(

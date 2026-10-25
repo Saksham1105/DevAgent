@@ -158,3 +158,9 @@ def test_default_provider_model_args():
     b.record(100, 50)  # use defaults: provider="ollama", model="unknown"
     assert b.total_used == 150
     assert b.total_cost_usd == 0.0  # ollama default
+
+
+def test_total_tokens_alias_matches_total_used():
+    budget = TokenBudget()
+    budget.record(120, 30)
+    assert budget.total_tokens == budget.total_used == 150

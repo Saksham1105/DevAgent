@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 from pathlib import Path
 
 import platformdirs
@@ -98,11 +99,9 @@ def ensure_dirs(project_root: Path) -> None:
 
 async def init_db(sqlite_path: Path) -> None:
     """Create the SQLite tables if they don't exist."""
-    import aiosqlite
-
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(sqlite_path) as db:
-        await db.execute("""
+    with sqlite3.connect(sqlite_path, timeout=5) as db:
+        db.execute("""
             CREATE TABLE IF NOT EXISTS indexed_files (
                 file_path TEXT PRIMARY KEY,
                 last_modified REAL NOT NULL,
@@ -110,13 +109,13 @@ async def init_db(sqlite_path: Path) -> None:
                 indexed_at TEXT NOT NULL
             )
         """)
-        await db.execute("""
+        db.execute("""
             CREATE TABLE IF NOT EXISTS project_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )
         """)
-        await db.commit()
+        db.commit()
 
 
 async def get_index_status(sqlite_path: Path) -> dict:
@@ -124,20 +123,17 @@ async def get_index_status(sqlite_path: Path) -> dict:
 
     Returns dict with keys: total_files, total_chunks, last_indexed, exists.
     """
-    import aiosqlite
-
     if not sqlite_path.is_file():
         return {"total_files": 0, "total_chunks": 0, "last_indexed": None, "exists": False}
 
-    async with aiosqlite.connect(sqlite_path) as db:
-        async with db.execute("SELECT COUNT(*), COALESCE(SUM(chunk_count), 0) FROM indexed_files") as cursor:
-            row = await cursor.fetchone()
-            total_files = row[0] if row else 0
-            total_chunks = row[1] if row else 0
-
-        async with db.execute("SELECT MAX(indexed_at) FROM indexed_files") as cursor:
-            row = await cursor.fetchone()
-            last_indexed = row[0] if row else None
+    with sqlite3.connect(sqlite_path, timeout=5) as db:
+        row = db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(chunk_count), 0) FROM indexed_files"
+        ).fetchone()
+        total_files = row[0] if row else 0
+        total_chunks = row[1] if row else 0
+        row = db.execute("SELECT MAX(indexed_at) FROM indexed_files").fetchone()
+        last_indexed = row[0] if row else None
 
     return {
         "total_files": total_files,
@@ -152,7 +148,6 @@ async def get_changed_files_count(project_root: Path, sqlite_path: Path) -> dict
 
     Returns dict with keys: changed, new, deleted.
     """
-    import aiosqlite
     import pathspec as _pathspec
 
     if not sqlite_path.is_file():
@@ -160,10 +155,9 @@ async def get_changed_files_count(project_root: Path, sqlite_path: Path) -> dict
 
     # Load indexed files
     indexed: dict[str, float] = {}
-    async with aiosqlite.connect(sqlite_path) as db:  # noqa: SIM117
-        async with db.execute("SELECT file_path, last_modified FROM indexed_files") as cursor:
-            async for row in cursor:
-                indexed[row[0]] = row[1]
+    with sqlite3.connect(sqlite_path, timeout=5) as db:
+        rows = db.execute("SELECT file_path, last_modified FROM indexed_files").fetchall()
+        indexed.update({row[0]: row[1] for row in rows})
 
     # Load gitignore spec
     gitignore_path = project_root / ".gitignore"
