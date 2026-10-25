@@ -118,14 +118,13 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             from devagent.session.manager import SessionManager
             mgr = SessionManager()
-            sessions = mgr.list(limit=500)
-            match = next((s for s in sessions if s["id"].startswith(session_id)), None)
-            if match is None:
+            session = mgr.get(session_id)
+            if session is None:
                 self._json({"error": f"session not found: {session_id}"}, status=404)
                 return
-            events = mgr.get_events(match["id"])
-            totals = mgr.get_token_totals(match["id"])
-            self._json({"session": match, "events": events, "token_totals": totals})
+            events = mgr.get_events(session["id"])
+            totals = mgr.get_token_totals(session["id"])
+            self._json({"session": session, "events": events, "token_totals": totals})
         except Exception as exc:
             self._json({"error": str(exc)}, status=500)
 

@@ -135,6 +135,43 @@ def test_server_session_not_found():
     assert "error" in body
 
 
+def test_server_session_detail_exact_match_and_prefix_rejection():
+    from devagent.session import store as session_store
+
+    port = _free_port()
+    _start_server(port)
+
+    prefix_id = f"test-prefix-{int(time.time() * 1000)}"
+    full_id = f"{prefix_id}-extended"
+
+    session_store.init_schema()
+    session_store.create_session(
+        full_id,
+        project="/test/project",
+        model="qwen2.5-coder:7b",
+        provider="ollama",
+        title="Exact match test session",
+    )
+
+    try:
+        # Prefix lookup must return 404 rather than matching full_id
+        status, body = _get(port, f"/api/sessions/{prefix_id}")
+        assert status == 404
+        assert "error" in body
+
+        # Exact ID lookup succeeds and returns the session details
+        status, body = _get(port, f"/api/sessions/{full_id}")
+        assert status == 200
+        assert body["session"]["id"] == full_id
+        assert "events" in body
+        assert "token_totals" in body
+    finally:
+        try:
+            session_store.delete_session(full_id)
+        except Exception:
+            pass
+
+
 def test_server_cors_headers():
     port = _free_port()
     _start_server(port)
